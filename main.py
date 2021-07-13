@@ -6,6 +6,9 @@ import numpy as np
 from torch.utils.data.sampler import SubsetRandomSampler
 import torchvision.transforms as transforms
 import torch.optim as optim
+from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, balanced_accuracy_score
+import json
+
 
 class Model_1(nn.Module):
     def __init__(self):
@@ -53,42 +56,45 @@ class CifarPytorchTrainer:
 
     DATASET_NAME = 'cifar'
 
-    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, train_on_gpu: bool, saving_directory :str):
+    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, train_on_gpu: bool, saving_directory=''):
         """
         Args:
             model_name: model_1, model_2 or model_3. Name of model we wish to implement
             epochs: number of epochs we wish to train for
             lr: the learning rate of our optimizer
         """
-        self.model = MODELS[model_name]
+        self.model = MODELS[model_name]()
         self.epochs = epochs
         self.lr = lr
         self.batch_size = batch_size
         self.train_on_gpu = train_on_gpu
-    def train(self):
-        transform = transforms.Compose([
+        self.saving_directory = saving_directory
+        self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
-        train_data = datasets.CIFAR10('data', train=True, download=True, transform=transform)
-        num_train = len(train_data)
+        self.train_data = datasets.CIFAR10('data', train=True, download=True, transform=self.transform)
+        self.test_data = datasets.CIFAR10('data', train=False, download=True, transform=self.transform)
+
+    def train(self):
+        num_train = len(self.train_data)
         indices = list(range(num_train))
         np.random.shuffle(indices)
 
         train_sampler = SubsetRandomSampler(indices)
 
-        train_loader = torch.utils.data.DataLoader(train_data, batch_size=self.batch_size, sampler=train_sampler)
+        train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=self.batch_size, sampler=train_sampler)
         for epoch in range(1, self.epochs + 1):
             train_loss = 0.0
             self.model.train()
-            criterion = nn.CrossEntropyLoss()
+            self.criterion = nn.CrossEntropyLoss()
             optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
             for data, target in train_loader:
                 if self.train_on_gpu:
                     data, target = data.cuda(), target.cuda()
                 optimizer.zero_grad()
                 output = self.model(data)
-                loss = criterion(output, target)
+                loss = self.criterion(output, target)
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
@@ -96,38 +102,81 @@ class CifarPytorchTrainer:
 
     def infer(self, new_image: np.ndarray) -> np.ndarray:
         self.model.eval()
-        output = self.model(new_image)
+        image = torch.from_numpy(new_image)
+        output = self.model(image)
         return output
 
+
     def get_metrics(self) -> dict:
-        # TODO: returns a metrics on train and validation data
-        # f1 score, recall, precision, accuracy, balanced accuracy - all are in sickit learn
-        pass
+        metrics = {}
+        test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=len(self.test_data))
+        train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=len(self.train_data))
+        for data, target in test_loader:
+            if self.train_on_gpu:
+                data, target = data.cuda(), target.cuda()
+            output = self.model(data)
+            test_preds = [torch.where(probas == torch.max(probas)) for probas in output]
+            test_target = target
+        for data, target in train_loader:
+            if self.train_on_gpu:
+                data, target = data.cuda(), target.cuda()
+            output = self.model(data)
+            train_preds = [torch.where(probas == torch.max(probas)) for probas in output]
+            train_target = target
+
+        test_pred = torch.zeros_like(test_target)
+        for i in range(len(test_pred)):
+            test_pred[i] = test_preds[i][0]
+
+        train_pred = torch.zeros_like(train_target)
+        for i in range(len(train_pred)):
+            train_pred[i] = train_preds[i][0]
+
+        metrics["train_accuracy"] = accuracy_score(train_target, train_pred)
+        metrics["test_accuracy"] = accuracy_score(test_target, test_pred)
+        metrics["train_balanced_accuracy"] = balanced_accuracy_score(train_target, train_pred)
+        metrics["test_balanced_accuracy"] = balanced_accuracy_score(test_target, test_pred)
+        metrics["train_precision"] = precision_score(train_target, train_pred, average='micro')
+        metrics["test_precision"] = precision_score(test_target, test_pred, average='micro')
+        metrics["train_recall"] = recall_score(train_target, train_pred, average='micro')
+        metrics["test_recall"] = recall_score(test_target, test_pred, average='micro')
+        metrics["train_f1score"] = f1_score(train_target, train_pred, average='micro')
+        metrics["test_f1score"] = f1_score(test_target, test_pred, average='micro')
+        return metrics
 
     def save(self):
-        # TODO saves a model weights and metrics (as a JSON file)
-        pass
+        if self.saving_directory != '':
+            dir = self.saving_directory + '/'
+        else:
+            dir = self.saving_directory
+        state_dict = {}
+        for key in self.model.state_dict():
+            state_dict[key] = self.model.state_dict()[key].tolist()
+        saver = {}
+        saver["Metrics"] = self.get_metrics()
+        saver["Weights"] = state_dict
+        with open(dir + 'data.json', 'w') as f:
+            json.dump(saver, f)
 
 
 if __name__ == "__main__":
     # TODO implement argparse
     pass
 
-trainer = CifarPytorchTrainer('model_1', 5, 0.01, 32, False, 'asd')
-CifarPytorchTrainer.train(self=trainer)
+trainer = CifarPytorchTrainer('model_1', 5, 0.01, 32, False)
+#CifarPytorchTrainer.train(self=trainer)
 transform = transforms.Compose([
              transforms.ToTensor(),
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
          ])
-test_data = datasets.CIFAR10('data', train=False, download=True, transform=transform)
-num_test = len(test_data)
+num_test = len(trainer.test_data)
 indices = list(range(num_test))
 np.random.shuffle(indices)
 test_sampler = SubsetRandomSampler(indices)
-test_loader = torch.utils.data.DataLoader(test_data, batch_size=1, sampler=test_sampler)
+test_loader = torch.utils.data.DataLoader(trainer.test_data, batch_size=1, sampler=test_sampler)
 dataiter = iter(test_loader)
 image, label = dataiter.next()
 image = image.numpy()
-img = image.reshape(32, 32, 3)
-print(img.shape)
-trainer.infer(new_image=img)
+trainer.infer(new_image=image)
+#print(trainer.get_metrics())
+trainer.save()
