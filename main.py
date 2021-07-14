@@ -1,14 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import datasets
+from torchvision import datasets, models
 import numpy as np
 from torch.utils.data.sampler import SubsetRandomSampler
 import torchvision.transforms as transforms
 import torch.optim as optim
 from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, balanced_accuracy_score
 import json
-
+import argparse
 
 class Model_1(nn.Module):
     def __init__(self):
@@ -36,18 +36,64 @@ class Model_1(nn.Module):
         return x
 
 
+
 class Model_2(nn.Module):
-    pass
+    def __init__(self):
+        super(Model_2, self).__init__()
+        # convolutional layers
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, 5, padding=2)
+        self.conv4 = nn.Conv2d(256,512, 5, padding=2, stride=5)
+        self.conv5 = nn.Conv2d(512, 512, 3, padding=1)
 
+        # dense layers
+        self.dense1 = nn.Linear(512, 512)
+        self.dense2 = nn.Linear(512, 128)
+        self.dense3 = nn.Linear(128, 10)
 
-class Model_3(nn.Module):
-    pass
+        # dropout layer
+        self.dropout = nn.Dropout(0.5)
+
+        # pooling layer
+        self.pool = nn.MaxPool2d(4,4)
+
+        #batchnorm layer
+        self.batchnorm1 = nn.BatchNorm2d(64)
+        self.batchnorm2 = nn.BatchNorm2d(128)
+        self.batchnorm3 = nn.BatchNorm2d(256)
+        self.batchnorm4 = nn.BatchNorm2d(512)
+
+        self.batchnorm1d = nn.BatchNorm1d(512)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.batchnorm1(x)
+        x = F.relu(self.conv2(x))
+        x = self.batchnorm2(x)
+        x = F.relu(self.conv3(x))
+        x = self.batchnorm3(x)
+        x = self.dropout(x)
+        x = F.relu(self.conv4(x))
+        x = self.batchnorm4(x)
+        x = F.relu(self.conv5(x))
+        x = self.batchnorm4(x)
+        x = self.dropout(x)
+        x = self.pool(x)
+
+        x = x.view([-1, 512])
+        x = F.relu(x)
+        x = self.batchnorm1d(x)
+        x = F.relu(self.dense1(x))
+        x = F.relu(self.dense2(x))
+        x = F.relu(self.dense3(x))
+
+        return x
 
 
 MODELS = {
     'model_1': Model_1,
-    'model_2': Model_2,
-    'model_3': Model_3
+    'model_2': Model_2
 }
 
 
@@ -56,18 +102,26 @@ class CifarPytorchTrainer:
 
     DATASET_NAME = 'cifar'
 
-    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, train_on_gpu: bool, saving_directory=''):
+    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, saving_directory=''):
         """
         Args:
             model_name: model_1, model_2 or model_3. Name of model we wish to implement
             epochs: number of epochs we wish to train for
             lr: the learning rate of our optimizer
+            batch_size: the batch size of our model
+            saving_directory: the directory we want to save our model weights and metrics
         """
-        self.model = MODELS[model_name]()
+        if model_name != 'model_3':
+            self.model = MODELS[model_name]()
+        else:
+            self.model = models.vgg16(pretrained=True)
+            for param in self.model.parameters():
+                param.requires_grad = False
+            self.model.classifier[6] = nn.Linear(4096, 10)
         self.epochs = epochs
         self.lr = lr
         self.batch_size = batch_size
-        self.train_on_gpu = train_on_gpu
+        self.train_on_gpu = torch.cuda.is_available()
         self.saving_directory = saving_directory
         self.transform = transforms.Compose([
             transforms.ToTensor(),
@@ -77,6 +131,9 @@ class CifarPytorchTrainer:
         self.test_data = datasets.CIFAR10('data', train=False, download=True, transform=self.transform)
 
     def train(self):
+        """
+        trains the model we picked with the parameters in __init__
+        """
         num_train = len(self.train_data)
         indices = list(range(num_train))
         np.random.shuffle(indices)
@@ -101,6 +158,11 @@ class CifarPytorchTrainer:
 
 
     def infer(self, new_image: np.ndarray) -> np.ndarray:
+        """
+        Does inference on a single image and returns the probabilites of each class
+        :param new_image: a 32x32 numpy array, which is the image
+        :return: a 10x1 numpy array, which is the probabities for each class
+        """
         self.model.eval()
         image = torch.from_numpy(new_image)
         output = self.model(image)
@@ -108,6 +170,10 @@ class CifarPytorchTrainer:
 
 
     def get_metrics(self) -> dict:
+        """
+        gets the following metrics for our model (both test and train): accuracy, precision, recall, f1 score, balanced accuracy
+        :return: the metrics mentioned above
+        """
         metrics = {}
         test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=len(self.test_data))
         train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=len(self.train_data))
@@ -145,6 +211,9 @@ class CifarPytorchTrainer:
         return metrics
 
     def save(self):
+        """
+        saves the metrics stated in get_metrics and the weights of the trained model
+        """
         if self.saving_directory != '':
             dir = self.saving_directory + '/'
         else:
@@ -160,23 +229,13 @@ class CifarPytorchTrainer:
 
 
 if __name__ == "__main__":
-    # TODO implement argparse
-    pass
-
-trainer = CifarPytorchTrainer('model_1', 5, 0.01, 32, False)
-#CifarPytorchTrainer.train(self=trainer)
-transform = transforms.Compose([
-             transforms.ToTensor(),
-             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-         ])
-num_test = len(trainer.test_data)
-indices = list(range(num_test))
-np.random.shuffle(indices)
-test_sampler = SubsetRandomSampler(indices)
-test_loader = torch.utils.data.DataLoader(trainer.test_data, batch_size=1, sampler=test_sampler)
-dataiter = iter(test_loader)
-image, label = dataiter.next()
-image = image.numpy()
-trainer.infer(new_image=image)
-#print(trainer.get_metrics())
-trainer.save()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("model", type=str, help="the model number which we want")
+    parser.add_argument("epochs", type=int, help="the number of epochs we want our model to train for")
+    parser.add_argument("lr", type=float, help="the learning rate of our optimizer")
+    parser.add_argument("batch_size", type=int, help="the batch size for our model")
+    args = parser.parse_args()
+    trainer = CifarPytorchTrainer(args.model, args.epochs, args.lr, args.batch_size)
+    trainer.train()
+    print("Trained! Saving the weights and metrics.")
+    trainer.save()
