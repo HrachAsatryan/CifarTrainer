@@ -10,6 +10,7 @@ from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_sc
 import json
 import argparse
 
+
 class Model_1(nn.Module):
     def __init__(self):
         super(Model_1, self).__init__()
@@ -34,7 +35,6 @@ class Model_1(nn.Module):
         x = F.relu(self.dense1(x))
         x = self.dense2(x)
         return x
-
 
 
 class Model_2(nn.Module):
@@ -96,20 +96,26 @@ MODELS = {
     'model_2': Model_2
 }
 
+OPTIMIZERS = {
+    'Adam': optim.Adam,
+    'SGD': optim.SGD
+}
+
 
 class CifarPytorchTrainer:
     """Implement training on CIFAR dataset"""
 
     DATASET_NAME = 'cifar'
 
-    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, saving_directory=''):
+    def __init__(self, model_name: str, epochs: int, lr: float, batch_size: int, patience: int = 0, optimizer: str = "Adam", saving_directory: str = ''):
         """
         Args:
             model_name: model_1, model_2 or model_3. Name of model we wish to implement
             epochs: number of epochs we wish to train for
             lr: the learning rate of our optimizer
             batch_size: the batch size of our model
-            saving_directory: the directory we want to save our model weights and metrics
+            optimizer of our model, default is Adam
+            saving_directory: the directory we want to save our model weights and metrics, default is the same dir
         """
         if model_name != 'model_3':
             self.model = MODELS[model_name]()
@@ -129,6 +135,9 @@ class CifarPytorchTrainer:
         ])
         self.train_data = datasets.CIFAR10('data', train=True, download=True, transform=self.transform)
         self.test_data = datasets.CIFAR10('data', train=False, download=True, transform=self.transform)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = OPTIMIZERS[optimizer](self.model.parameters(), lr=self.lr)
+        self.patience = patience
 
     def train(self):
         """
@@ -141,33 +150,49 @@ class CifarPytorchTrainer:
         train_sampler = SubsetRandomSampler(indices)
 
         train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=self.batch_size, sampler=train_sampler)
+        test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=self.batch_size)
+        train_losses = []
+        test_losses = []
         for epoch in range(1, self.epochs + 1):
             train_loss = 0.0
+            test_loss = 0.0
             self.model.train()
-            self.criterion = nn.CrossEntropyLoss()
-            optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
             for data, target in train_loader:
                 if self.train_on_gpu:
                     data, target = data.cuda(), target.cuda()
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
                 output = self.model(data)
                 loss = self.criterion(output, target)
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
                 train_loss += loss.item() * data.size(0)
+            print(f"Training loss for epoch {epoch} is {train_loss / len(train_loader.sampler)}.")
+            for data, target in test_loader:
+                if self.train_on_gpu:
+                    data, target = data.cuda(), target.cuda()
+                output = self.model(data)
+                loss = self.criterion(output, target)
+                test_loss += loss.item() * data.size(0)
+            print(f"Test loss for epoch {epoch} is {test_loss / len(test_loader.sampler)}.")
+            train_losses.append(train_loss)
+            test_losses.append(test_loss)
 
+            if test_loss <= np.min(test_losses):
+                torch.save(self.model, 'model.pt')
+            if abs(np.where(np.array(test_losses) == np.min(test_losses))[0] - epoch) > self.patience:
+                self.model = torch.load('model.pt')
+                break
 
     def infer(self, new_image: np.ndarray) -> np.ndarray:
         """
         Does inference on a single image and returns the probabilites of each class
         :param new_image: a 32x32 numpy array, which is the image
-        :return: a 10x1 numpy array, which is the probabities for each class
+        :return: a 10x1 numpy array, which is the probabilities for each class
         """
         self.model.eval()
         image = torch.from_numpy(new_image)
         output = self.model(image)
         return output
-
 
     def get_metrics(self) -> dict:
         """
@@ -175,26 +200,30 @@ class CifarPytorchTrainer:
         :return: the metrics mentioned above
         """
         metrics = {}
-        test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=len(self.test_data))
-        train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=len(self.train_data))
+        test_preds = []
+        test_target = []
+        train_preds = []
+        train_target = []
+        test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=self.batch_size)
+        train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=self.batch_size)
         for data, target in test_loader:
             if self.train_on_gpu:
                 data, target = data.cuda(), target.cuda()
             output = self.model(data)
-            test_preds = [torch.where(probas == torch.max(probas)) for probas in output]
-            test_target = target
+            test_preds += [torch.where(probas == torch.max(probas)) for probas in output]
+            test_target += target
         for data, target in train_loader:
             if self.train_on_gpu:
                 data, target = data.cuda(), target.cuda()
             output = self.model(data)
-            train_preds = [torch.where(probas == torch.max(probas)) for probas in output]
-            train_target = target
+            train_preds += [torch.where(probas == torch.max(probas)) for probas in output]
+            train_target += target
 
-        test_pred = torch.zeros_like(test_target)
+        test_pred = torch.zeros_like(torch.Tensor(test_target))
         for i in range(len(test_pred)):
             test_pred[i] = test_preds[i][0]
 
-        train_pred = torch.zeros_like(train_target)
+        train_pred = torch.zeros_like(torch.Tensor(train_target))
         for i in range(len(train_pred)):
             train_pred[i] = train_preds[i][0]
 
@@ -234,8 +263,11 @@ if __name__ == "__main__":
     parser.add_argument("epochs", type=int, help="the number of epochs we want our model to train for")
     parser.add_argument("lr", type=float, help="the learning rate of our optimizer")
     parser.add_argument("batch_size", type=int, help="the batch size for our model")
+    parser.add_argument("patience", type=int, help="the patience of our optimizer")
+    parser.add_argument("optimizer", type=str, help="the optimizer of our model")
+    parser.add_argument("saving_dir", type=str, help="the directory in which we wish to save our model weights and metrics")
     args = parser.parse_args()
-    trainer = CifarPytorchTrainer(args.model, args.epochs, args.lr, args.batch_size)
+    trainer = CifarPytorchTrainer(args.model, args.epochs, args.lr, args.batch_size, args.patience, args.optimizer, args.saving_dir)
     trainer.train()
     print("Trained! Saving the weights and metrics.")
     trainer.save()
