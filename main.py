@@ -99,7 +99,9 @@ class CifarPytorchTrainer:
         :return: a 10x1 numpy array, which is the probabilities for each class
         """
         self.model.eval()
-        image = torch.from_numpy(new_image)
+        new_image = new_image.reshape(32, 32, 3)
+        image = self.transform(new_image)
+        image = image.reshape(1, 3, 32, 32)
         output = self.model(image)
         return output
 
